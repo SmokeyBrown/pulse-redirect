@@ -1,6 +1,9 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
 const EMAIL_LIKE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const PHONE_LIKE = /^\+?[\d\s().-]{10,}$/
 
@@ -113,5 +116,13 @@ export async function GET(
     intent,
   })
 
-  return NextResponse.redirect(href, 302)
+  const headers = {
+    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    'Pragma': 'no-cache',
+  }
+
+  return NextResponse.redirect(href, {
+    status: 302,
+    headers,
+  })
 }
