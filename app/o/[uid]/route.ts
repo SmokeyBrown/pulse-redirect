@@ -121,8 +121,79 @@ export async function GET(
     'Pragma': 'no-cache',
   }
 
+  // LinkedIn: iOS and Android only hand a link to the app on a real user tap,
+  // never on a server redirect. Serve a minimal page with one big button that
+  // is a plain linkedin.com link so the tap opens the app.
+  if (isLinkedInUrl(href)) {
+    return new NextResponse(linkedInButtonPage(href), {
+      status: 200,
+      headers: {
+        ...headers,
+        'Content-Type': 'text/html; charset=utf-8',
+      },
+    })
+  }
+
   return NextResponse.redirect(href, {
     status: 302,
     headers,
   })
+}
+
+function isLinkedInUrl(href: string): boolean {
+  try {
+    const u = new URL(href)
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return false
+    const host = u.hostname.toLowerCase()
+    return (
+      host === 'linkedin.com' ||
+      host.endsWith('.linkedin.com') ||
+      host === 'lnkd.in'
+    )
+  } catch {
+    return false
+  }
+}
+
+function escapeHtmlAttr(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function linkedInButtonPage(href: string): string {
+  const safe = escapeHtmlAttr(href)
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Open LinkedIn</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) { body { background: #000000; } }
+  a.btn {
+    display: block; width: 100%; max-width: 360px;
+    padding: 20px 24px; border-radius: 999px;
+    background: #0a66c2; color: #ffffff;
+    font-size: 20px; font-weight: 600; text-align: center; text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  a.btn:active { background: #004182; }
+</style>
+</head>
+<body>
+<a class="btn" href="${safe}">Open LinkedIn</a>
+</body>
+</html>`
 }
