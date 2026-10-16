@@ -63,12 +63,37 @@ export async function GET(
 
   const { data: obj, error: objErr } = await supabase
     .from('objects')
-    .select('id, user_id, active_mode_id')
+    .select('id, user_id, active_mode_id, mode_config')
     .eq('uid', uid)
     .maybeSingle()
 
-  if (objErr || !obj?.id || !obj.user_id) {
+  if (objErr || !obj?.id) {
     return NextResponse.json({ error: 'not found' }, { status: 404 })
+  }
+
+  if (!obj.user_id) {
+    // Unclaimed object. If it carries a lost-and-found flag, show the finder
+    // a "please return this" page instead of a 404. Once the object is claimed
+    // again this branch is skipped and normal routing resumes.
+    const lost = parseLostConfig(obj.mode_config)
+    if (!lost) {
+      return NextResponse.json({ error: 'not found' }, { status: 404 })
+    }
+
+    await supabase.from('unclaimed_tap_events').insert({
+      object_id: obj.id,
+      uid,
+    })
+
+    return new NextResponse(lostRingPage(lost), {
+      status: 200,
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'X-Robots-Tag': 'noindex, nofollow',
+        'Content-Type': 'text/html; charset=utf-8',
+      },
+    })
   }
 
   let modeId: string | null = null
@@ -138,6 +163,136 @@ export async function GET(
     status: 302,
     headers,
   })
+}
+
+type LostConfig = {
+  name: string
+  phone: string | null
+  email: string | null
+  message: string | null
+}
+
+/**
+ * Reads objects.mode_config.lost. Shape:
+ * { enabled: true, name: string, phone?: string, email?: string, message?: string }
+ * Returns null unless enabled with a name and at least one way to reach the owner.
+ */
+function parseLostConfig(modeConfig: unknown): LostConfig | null {
+  if (!modeConfig || typeof modeConfig !== 'object') return null
+  const lost = (modeConfig as Record<string, unknown>).lost
+  if (!lost || typeof lost !== 'object') return null
+  const l = lost as Record<string, unknown>
+  if (l.enabled !== true) return null
+
+  const str = (v: unknown): string | null =>
+    typeof v === 'string' && v.trim() ? v.trim().slice(0, 300) : null
+
+  const name = str(l.name)
+  const phone = str(l.phone)
+  const email = str(l.email)
+  if (!name || (!phone && !email)) return null
+
+  return { name, phone, email, message: str(l.message) }
+}
+
+function formatPhoneDisplay(raw: string): string {
+  const digits = raw.replace(/\D/g, '')
+  if (digits.length === 10) {
+    return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
+  }
+  if (digits.length === 11 && digits.startsWith('1')) {
+    return `+1 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`
+  }
+  return raw
+}
+
+function phoneDialHref(raw: string): string {
+  const digits = raw.replace(/\D/g, '')
+  if (raw.trim().startsWith('+')) return `+${digits}`
+  if (digits.length === 10) return `+1${digits}`
+  return digits
+}
+
+function lostRingPage(lost: LostConfig): string {
+  const name = escapeHtmlAttr(lost.name)
+  const firstName = escapeHtmlAttr(lost.name.split(/\s+/)[0] || lost.name)
+  const note = lost.message
+    ? escapeHtmlAttr(lost.message)
+    : `If you found it, please help get it back to ${firstName}. Thank you!`
+
+  const buttons: string[] = []
+  if (lost.phone) {
+    const dial = escapeHtmlAttr(phoneDialHref(lost.phone))
+    buttons.push(
+      `<a class="btn primary" href="tel:${dial}">Call ${firstName}</a>`,
+      `<a class="btn" href="sms:${dial}">Text ${firstName}</a>`
+    )
+  }
+  if (lost.email) {
+    const mail = escapeHtmlAttr(lost.email)
+    buttons.push(`<a class="btn" href="mailto:${mail}?subject=${encodeURIComponent('I found your Pulse ring')}">Email ${firstName}</a>`)
+  }
+
+  const details: string[] = []
+  if (lost.phone) {
+    details.push(`<div class="row"><span>Phone</span><strong>${escapeHtmlAttr(formatPhoneDisplay(lost.phone))}</strong></div>`)
+  }
+  if (lost.email) {
+    details.push(`<div class="row"><span>Email</span><strong>${escapeHtmlAttr(lost.email)}</strong></div>`)
+  }
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Lost ring: please return</title>
+<style>
+  :root { color-scheme: light dark; --bg:#ffffff; --fg:#0a0a0a; --muted:#6b6b6b; --card:#f3f3f1; --line:#e3e3df; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0a0a0a; --fg:#ffffff; --muted:#a3a3a3; --card:#161616; --line:#262626; } }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { width: 100%; max-width: 400px; text-align: center; }
+  .badge {
+    display: inline-block; padding: 6px 14px; border-radius: 999px;
+    background: var(--card); border: 1px solid var(--line);
+    font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+  }
+  h1 { margin: 20px 0 10px; font-size: 30px; line-height: 1.15; font-weight: 700; letter-spacing: -.02em; }
+  p.note { margin: 0 0 28px; font-size: 17px; line-height: 1.5; color: var(--muted); }
+  .actions { display: grid; gap: 12px; margin-bottom: 24px; }
+  a.btn {
+    display: block; padding: 17px 20px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+    font-size: 17px; font-weight: 600; text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  a.btn.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  a.btn:active { opacity: .8; }
+  .card { text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 16px; padding: 4px 18px; }
+  .row { display: flex; justify-content: space-between; gap: 16px; padding: 14px 0; font-size: 15px; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row span { color: var(--muted); }
+  .row strong { font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<main>
+  <div class="badge">Lost ring</div>
+  <h1>This ring belongs to ${name}</h1>
+  <p class="note">${note}</p>
+  <div class="actions">${buttons.join('')}</div>
+  <div class="card">${details.join('')}</div>
+</main>
+</body>
+</html>`
 }
 
 function isLinkedInUrl(href: string): boolean {
